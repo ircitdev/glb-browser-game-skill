@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Загрузка</title>
+<style>
+  :root { --bg:#030a14; --accent:#33a4d4; --ink:#eaf4fb; --muted:#8fb0c6; --bad:#ff5a4f; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink); overflow:hidden;
+    font:16px/1.45 "Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif; }
+  canvas#view { position:fixed; inset:0; width:100%; height:100%; display:block; }
+  #hud { position:fixed; inset:0; pointer-events:none; opacity:0; transition:opacity .25s; }
+  #hud.on { opacity:1; }
+  #hud::before { content:""; position:absolute; left:0; right:0; top:0; height:130px;
+    background:linear-gradient(180deg,rgba(3,10,20,.82),rgba(3,10,20,0)); }
+  .stat { position:absolute; top:22px; text-shadow:0 1px 8px rgba(0,0,0,.7); }
+  .stat small { display:block; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+  .stat b { font-size:44px; line-height:1.05; font-weight:700; font-variant-numeric:tabular-nums; }
+  #s-score { left:28px; } #s-time { left:50%; transform:translateX(-50%); text-align:center; }
+  #s-time.low b { color:var(--bad); }
+  #s-combo { right:28px; text-align:right; opacity:0; transition:opacity .15s; }
+  #s-combo b { color:var(--accent); }
+  #stam { position:absolute; left:50%; bottom:30px; width:220px; height:6px; margin-left:-110px;
+    background:rgba(255,255,255,.14); border-radius:3px; overflow:hidden; }
+  #stam i { display:block; height:100%; width:100%; background:var(--accent); }
+  #stam.out i { background:var(--bad); }
+  #toast { position:absolute; left:50%; top:30%; transform:translate(-50%,0); font-size:30px; font-weight:700;
+    opacity:0; text-shadow:0 2px 14px rgba(0,0,0,.8); white-space:nowrap; }
+  #toast.show { animation:t .9s ease-out; }
+  @keyframes t { 0%{opacity:0;transform:translate(-50%,14px)} 15%{opacity:1;transform:translate(-50%,0)} 70%{opacity:1} 100%{opacity:0;transform:translate(-50%,-16px)} }
+  #flash { position:fixed; inset:0; pointer-events:none; opacity:0;
+    background:radial-gradient(ellipse at center,rgba(255,60,50,0) 45%,rgba(255,60,50,.55) 100%); }
+  #overlay { position:fixed; inset:0; display:flex; align-items:center; padding:0 7vw;
+    background:linear-gradient(90deg,rgba(3,10,20,.94) 0%,rgba(3,10,20,.72) 42%,rgba(3,10,20,0) 72%); }
+  #overlay.hide { display:none; }
+  .panel { max-width:470px; }
+  .brand { font-size:13px; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); font-weight:600; }
+  h1 { font-size:clamp(44px,6.4vw,76px); line-height:1; margin:.22em 0 .3em; font-weight:800; letter-spacing:-.02em; }
+  #lead { font-size:18px; color:#cfe2ef; margin:0 0 24px; }
+  #result { display:none; font-size:20px; margin:0 0 22px; }
+  #result b { font-size:40px; color:var(--accent); font-variant-numeric:tabular-nums; }
+  button { font:inherit; font-weight:700; font-size:18px; color:#03121d; background:var(--accent); border:0;
+    border-radius:8px; padding:14px 34px; cursor:pointer; transition:transform .12s, background .12s; }
+  button:hover { background:#58bbe5; transform:translateY(-1px); }
+  button:focus-visible { outline:3px solid #fff; outline-offset:3px; }
+  button:disabled { background:#3a5468; color:#9fb6c6; cursor:progress; transform:none; }
+  dl { display:grid; grid-template-columns:max-content 1fr; gap:5px 16px; margin:26px 0 0; font-size:14px; color:var(--muted); }
+  dt { color:var(--ink); font-weight:600; } dd { margin:0; }
+  #note { margin:14px 0 0; font-size:13px; color:var(--muted); }
+  @media (max-width:640px) { #overlay { background:rgba(3,10,20,.86); } .stat b { font-size:32px; } }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="hud">
+  <div class="stat" id="s-score"><small id="pickup-label"></small><b id="score">0</b></div>
+  <div class="stat" id="s-time"><small>Время</small><b id="time">1:15</b></div>
+  <div class="stat" id="s-combo"><small>Серия</small><b id="combo">×2</b></div>
+  <div id="stam"><i></i></div>
+  <div id="toast"></div>
+</div>
+<div id="flash"></div>
+<div id="overlay">
+  <div class="panel">
+    <div class="brand" id="brand"></div>
+    <h1 id="title"></h1>
+    <p id="lead"></p>
+    <p id="result"><b id="r-score">0</b> · лучший результат <span id="r-best">0</span></p>
+    <button id="go" disabled>Загрузка…</button>
+    <dl>
+      <dt>W A S D</dt><dd>бег</dd>
+      <dt>Мышь</dt><dd>камера</dd>
+      <dt>Shift</dt><dd>ускорение</dd>
+      <dt>Пробел</dt><dd>прыжок через врага</dd>
+      <dt>ЛКМ или E</dt><dd>удар, враг даёт +2</dd>
+      <dt>M</dt><dd>звук</dd>
+    </dl>
+    <p id="note"></p>
+  </div>
+</div>
+__SCRIPT__
+</body>
+</html>

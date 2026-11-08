@@ -1,0 +1,14 @@
+{
+  "name": "glb-browser-game",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs main",
+    "sheet": "node build.mjs sheet && node tools/sheet.mjs",
+    "test": "node tools/test.mjs"
+  },
+  "dependencies": {
+    "esbuild": "0.24.0",
+    "three": "0.170.0"
+  }
+}
