@@ -4,8 +4,9 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs main",
-    "sheet": "node build.mjs sheet && node tools/sheet.mjs",
-    "test": "node tools/test.mjs"
+    "sheet": "node build.mjs sheet && node tools/page-shot.mjs sheet 1600 1980",
+    "test": "node tools/test.mjs",
+    "test:touch": "node tools/test-touch.mjs"
   },
   "dependencies": {
     "esbuild": "0.24.0",

@@ -1,17 +1,23 @@
 // Раскадровка: верхний ряд — поза покоя с десяти сторон (проверка, куда смотрит модель),
-// ниже по ряду на клип, десять равных шагов от начала до конца. Читать глазами.
+// ниже по ряду на клип, десять равных шагов от начала до конца. Клипы обрабатываются так же, как в игре.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
+import CFG from './config.js';
+import { cleanClip } from './clips.js';
 import modelUrl from '../assets/model.glb';
 import idleUrl from '../assets/idle.glb';
 import runUrl from '../assets/run.glb';
 import jumpUrl from '../assets/jump.glb';
 import punchUrl from '../assets/punch.glb';
+import kickUrl from '../assets/kick.glb';
+import rollUrl from '../assets/roll.glb';
 import hitUrl from '../assets/hit.glb';
 import winUrl from '../assets/win.glb';
 
-const W = 1600, ROW = 220, COLS = 10, URLS = [idleUrl, runUrl, jumpUrl, punchUrl, hitUrl, winUrl], H = ROW * (URLS.length + 1);
+const ROLES = ['idle', 'run', 'jump', 'punch', 'kick', 'roll', 'hit', 'win'];
+const URLS = [idleUrl, runUrl, jumpUrl, punchUrl, kickUrl, rollUrl, hitUrl, winUrl];
+const W = 1600, ROW = 220, COLS = 10, H = ROW * (URLS.length + 1);
 const r = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 r.setSize(W, H); r.setScissorTest(true); document.body.appendChild(r.domElement);
 const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
@@ -34,16 +40,8 @@ const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
   for (let i = 0; i < COLS; i++) shoot(i, 0, i * Math.PI * 2 / COLS);
   const mixer = new THREE.AnimationMixer(m);
   clips.forEach((c, row) => {
-    const clip = c.animations[0]; clip.tracks = clip.tracks.filter(t => !t.name.endsWith('.scale'));
-    for (const t of clip.tracks) { // Тот же вычет дрейфа таза, что в игре: иначе бег уезжает из кадра
-      if (!t.name.endsWith('.position')) continue;
-      const v = t.values, n = v.length / 3, dur = t.times[n - 1] || 1;
-      for (let a = 0; a < 3; a++) { const d = v[(n - 1) * 3 + a] - v[a]; for (let i = 0; i < n; i++) v[i * 3 + a] -= d * (t.times[i] / dur); }
-      // Клипы с движением по миру начинаются со сдвига таза: возвращаем ось к позе покоя.
-      // Вертикальный наклон меньше порога и остаётся как есть.
-      const bone = m.getObjectByName(t.name.split('.')[0]), rest = bone ? bone.position.toArray() : null, limit = bone ? bone.position.length() * .3 : Infinity;
-      for (let a = 0; rest && a < 3; a++) { let mean = 0; for (let i = 0; i < n; i++) mean += v[i * 3 + a] / n; if (Math.abs(mean - rest[a]) > limit) for (let i = 0; i < n; i++) v[i * 3 + a] += rest[a] - mean; }
-    }
+    const cfg = CFG.anim[ROLES[row]] || {};
+    const clip = cleanClip(c.animations[0], cfg.loop, cfg.inPlace, m);
     mixer.stopAllAction(); mixer.clipAction(clip).play();
     for (let i = 0; i < COLS; i++) { mixer.setTime(clip.duration * i / (COLS - 1) * .999); m.updateMatrixWorld(true); shoot(i, row + 1, .4); }
   });

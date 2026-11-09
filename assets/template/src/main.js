@@ -2,20 +2,28 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import CFG from './config.js';
+import { cleanClip } from './clips.js';
 import modelUrl from '../assets/model.glb';
 import idleUrl from '../assets/idle.glb';
 import runUrl from '../assets/run.glb';
 import jumpUrl from '../assets/jump.glb';
 import punchUrl from '../assets/punch.glb';
 import hitUrl from '../assets/hit.glb';
+import kickUrl from '../assets/kick.glb';
+import rollUrl from '../assets/roll.glb';
 import winUrl from '../assets/win.glb';
 
-const ROUND = CFG.round, HEIGHT = CFG.height, BOUND = 60, RUN = 5.4, SPRINT = 8.2, CAM_DIST = 5.6;
+const ROLL_T = .6, ROLL_SPEED = 11, ROLL_COOL = 1, ROLL_COST = 22; // кувырок: длительность, скорость, перезарядка, цена в выносливости
+const MAX_HP = CFG.hearts, ROUND = CFG.round, HEIGHT = CFG.height, BOUND = 60, RUN = 5.4, SPRINT = 8.2, CAM_DIST = 5.6;
 const ACCENT = new THREE.Color(CFG.accent).getHex();
 document.documentElement.style.setProperty('--accent', CFG.accent);
 const $ = id => document.getElementById(id);
 const clamp = THREE.MathUtils.clamp, lerp = THREE.MathUtils.lerp;
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const coarse = matchMedia('(pointer: coarse)').matches;
+let touchMode = false; // включается на телефоне сразу, на гибридах — по первому касанию
+const touch = { x: 0, y: 0, sprint: false, punchHeld: false, moveId: null, lookId: null, ox: 0, oy: 0, lx: 0, ly: 0 };
+const buzz = ms => { try { if (touchMode) navigator.vibrate?.(ms); } catch { /* нет вибромотора */ } };
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* приватный режим */ } },
@@ -27,7 +35,7 @@ const canvas = $('view');
 let renderer;
 try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); }
 catch (e) { fatal('Браузер не смог включить WebGL. Включите аппаратное ускорение и обновите страницу.'); throw e; }
-let dpr = Math.min(devicePixelRatio || 1, 2);
+let dpr = Math.min(devicePixelRatio || 1, coarse ? 1.5 : 2);
 renderer.setPixelRatio(dpr);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -57,7 +65,7 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 24, 16), new THREE.Mesh
 scene.add(sky);
 scene.add(new THREE.HemisphereLight(0x9cc6e6, 0x223044, 1.5));
 const key = new THREE.DirectionalLight(0xfff1dd, 2.6);
-key.castShadow = true; key.shadow.mapSize.set(2048, 2048);
+key.castShadow = true; key.shadow.mapSize.set(coarse ? 1024 : 2048, coarse ? 1024 : 2048);
 Object.assign(key.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 110 });
 key.shadow.bias = -0.0006; key.shadow.normalBias = 0.03;
 scene.add(key, key.target);
@@ -189,7 +197,7 @@ function camHit(o, dir, len) {
 }
 
 // ---------- Состояние ----------
-const player = { pos: new THREE.Vector3(0, 0, 4), vel: new THREE.Vector3(), vy: 0, facing: 0, grounded: true, stamina: 100, winded: false, hit: 0, punch: 0, cool: 0, inv: 0 };
+const player = { pos: new THREE.Vector3(0, 0, 4), vel: new THREE.Vector3(), vy: 0, facing: 0, grounded: true, hp: MAX_HP, attack: 'punch', roll: 0, rollCool: 0, safe: 0, rollDir: new THREE.Vector3(0, 0, 1), stamina: 100, winded: false, hit: 0, punch: 0, cool: 0, inv: 0 };
 const G = { state: 'loading', score: 0, time: ROUND, picks: 0, combo: 0, comboT: 0, yaw: Math.PI, pitch: .32, dist: CAM_DIST, shake: 0, elapsed: 0, muted: store.get(CFG.id + '-mute', '0') === '1', best: +store.get(CFG.id + '-best', '0') || 0 };
 const keys = new Set();
 
@@ -255,17 +263,41 @@ function tone(f0, f1, dur, type = 'sine', vol = .16, delay = 0) {
 const sfx = {
   pick: c => { const f = 620 * Math.pow(1.06, Math.min(c, 14)); tone(f, f * 1.5, .13, 'triangle', .17); },
   punch: () => tone(180, 70, .14, 'square', .1),
+  kick: () => tone(130, 52, .19, 'square', .12),
+  roll: () => { tone(330, 120, .22, 'sawtooth', .06); tone(90, 60, .2, 'sine', .1); },
   kill: () => { tone(520, 90, .2, 'sawtooth', .12); tone(880, 1400, .1, 'triangle', .1, .05); },
   hit: () => { tone(260, 55, .38, 'sawtooth', .18); },
   bonus: () => { tone(660, 990, .12, 'triangle', .14); tone(990, 1320, .16, 'triangle', .14, .1); },
+  lose: () => [392, 330, 262, 196].forEach((f, i) => tone(f, f * .92, .32, 'triangle', .15, i * .16)),
   end: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, f, .3, 'triangle', .15, i * .13)),
 };
 
 // ---------- HUD ----------
 const ui = { score: $('score'), time: $('time'), timeBox: $('s-time'), combo: $('combo'), comboBox: $('s-combo'), stam: $('stam'), stamBar: $('stam').firstElementChild, toast: $('toast'), flash: $('flash'), hud: $('hud'), overlay: $('overlay'), go: $('go'), title: $('title'), lead: $('lead'), result: $('result') };
 function toast(text, color = '#eaf4fb') { const t = ui.toast; t.textContent = text; t.style.color = color; t.classList.remove('show'); void t.offsetWidth; t.classList.add('show'); }
+// Сердца: потерянные гаснут справа налево, при двух и меньше оставшихся пульсируют.
+const heartsEl = $('hearts');
+const HEART = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+heartsEl.innerHTML = Array.from({ length: MAX_HP }, () => `<i class="h">${HEART}</i>`).join('');
+const rollBtn = $('t-roll');
+heartsEl.setAttribute('aria-label', `Здоровье: ${MAX_HP} из ${MAX_HP}`);
+let lastHp = MAX_HP;
+function drawHearts() {
+  const hp = clamp(player.hp, 0, MAX_HP);
+  if (hp === lastHp) return;
+  [...heartsEl.children].forEach((el, i) => {
+    const on = i < hp, was = i < lastHp;
+    el.classList.toggle('off', !on);
+    if (on !== was) { el.classList.remove('lose', 'gain'); void el.offsetWidth; el.classList.add(on ? 'gain' : 'lose'); }
+  });
+  heartsEl.classList.toggle('low', hp > 0 && hp <= 2);
+  heartsEl.setAttribute('aria-label', `Здоровье: ${hp} из ${MAX_HP}`);
+  lastHp = hp;
+}
 let lastT = -1;
 function drawHud() {
+  drawHearts();
+  rollBtn.classList.toggle('wait', player.rollCool > 0 || player.stamina < ROLL_COST); // кнопка тускнеет, пока кувырок недоступен
   ui.score.textContent = G.score;
   const s = Math.ceil(G.time);
   if (s !== lastT) { lastT = s; ui.time.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); ui.timeBox.classList.toggle('low', s <= 10); }
@@ -285,23 +317,9 @@ function play(name, fade = .14) {
   if (cur) actions[cur].fadeOut(fade);
   cur = name;
 }
-function cleanClip(clip, loop) {
-  clip.tracks = clip.tracks.filter(t => !t.name.endsWith('.scale'));
-  if (!loop) return clip;
-  for (const t of clip.tracks) { // Убираем накопленный сдвиг таза, чтобы цикл не «уезжал»
-    if (!t.name.endsWith('.position')) continue;
-    const v = t.values, n = v.length / 3, dur = t.times[n - 1] || 1;
-    for (let a = 0; a < 3; a++) { const d = v[(n - 1) * 3 + a] - v[a]; for (let i = 0; i < n; i++) v[i * 3 + a] -= d * (t.times[i] / dur); }
-      // Клипы с движением по миру начинаются со сдвига таза: возвращаем ось к позе покоя.
-      // Вертикальный наклон меньше порога и остаётся как есть.
-      const bone = model.getObjectByName(t.name.split('.')[0]), rest = bone ? bone.position.toArray() : null, limit = bone ? bone.position.length() * .3 : Infinity;
-      for (let a = 0; rest && a < 3; a++) { let mean = 0; for (let i = 0; i < n; i++) mean += v[i * 3 + a] / n; if (Math.abs(mean - rest[a]) > limit) for (let i = 0; i < n; i++) v[i * 3 + a] += rest[a] - mean; }
-  }
-  return clip;
-}
 async function loadAll() {
   const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
-  const urls = { idle: idleUrl, run: runUrl, jump: jumpUrl, punch: punchUrl, hit: hitUrl, win: winUrl };
+  const urls = { idle: idleUrl, run: runUrl, jump: jumpUrl, punch: punchUrl, kick: kickUrl, roll: rollUrl, hit: hitUrl, win: winUrl };
   const [gltf, ...clips] = await Promise.all([loader.loadAsync(modelUrl), ...Object.values(urls).map(u => loader.loadAsync(u))]);
   model = gltf.scene;
   model.traverse(o => {
@@ -317,7 +335,7 @@ async function loadAll() {
   character.add(model);
   mixer = new THREE.AnimationMixer(model);
   Object.keys(urls).forEach((name, i) => {
-    const cfg = ANIM[name], a = mixer.clipAction(cleanClip(clips[i].animations[0], cfg.loop));
+    const cfg = ANIM[name], a = mixer.clipAction(cleanClip(clips[i].animations[0], cfg.loop, cfg.inPlace, model));
     a.setLoop(cfg.loop ? THREE.LoopRepeat : THREE.LoopOnce); a.clampWhenFinished = !cfg.loop; actions[name] = a;
   });
   play('idle', 0);
@@ -325,14 +343,14 @@ async function loadAll() {
 
 // ---------- Ход игры ----------
 function resetRound() {
-  Object.assign(G, { score: 0, time: ROUND, picks: 0, combo: 0, comboT: 0, shake: 0, elapsed: 0, yaw: Math.PI, pitch: .32 });
-  Object.assign(player, { vy: 0, facing: Math.PI, grounded: true, stamina: 100, winded: false, hit: 0, punch: 0, cool: 0, inv: 0 });
+  Object.assign(G, { score: 0, time: ROUND, dying: 0, picks: 0, combo: 0, comboT: 0, shake: 0, elapsed: 0, yaw: Math.PI, pitch: .32 });
+  Object.assign(player, { vy: 0, facing: Math.PI, grounded: true, hp: MAX_HP, roll: 0, rollCool: 0, safe: 0, stamina: 100, winded: false, hit: 0, punch: 0, cool: 0, inv: 0 });
   player.pos.set(0, 0, 4); player.vel.set(0, 0, 0);
   pickups.forEach(p => { p.g.position.copy(freeSpot(4)); p.g.visible = true; p.wait = 0; });
   bots.forEach((b, i) => { b.active = i < 5; b.wait = 0; b.stun = 0; b.g.visible = b.active; if (b.active) b.pos.copy(freeSpot(24)); });
 }
 function setState(s) {
-  G.state = s;
+  G.state = s; touchReset(); syncTouchUi();
   const showOverlay = s !== 'play';
   ui.overlay.classList.toggle('hide', !showOverlay); ui.hud.classList.toggle('on', s === 'play' || s === 'pause');
   if (showOverlay && document.pointerLockElement) document.exitPointerLock();
@@ -342,15 +360,23 @@ function menu(title, lead, btn, result = false) {
   ui.result.style.display = result ? 'block' : 'none'; ui.lead.style.display = result ? 'none' : 'block';
 }
 function lockMouse() { try { const r = canvas.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch { /* режим перетаскивания */ } }
+function goFullscreen() { // убирает адресную строку и жесты браузера, которые мешают свайпу камеры
+  const de = document.documentElement;
+  if (document.fullscreenElement || !de.requestFullscreen) return;
+  try { const p = de.requestFullscreen({ navigationUI: 'hide' }); p && p.then && p.then(() => screen.orientation?.lock?.('landscape')?.catch(() => {})).catch(() => {}); } catch { /* не поддерживается */ }
+}
 function start() {
   initAudio();
-  if (G.state === 'pause') { setState('play'); lockMouse(); return; }
-  resetRound(); setState('play'); lockMouse(); play('idle');
+  if (touchMode) goFullscreen();
+  if (G.state === 'pause') { setState('play'); if (!touchMode) lockMouse(); return; }
+  resetRound(); setState('play'); if (!touchMode) lockMouse(); play('idle');
 }
-function finish() {
+function finish(reason) {
   G.best = Math.max(G.best, G.score); store.set(CFG.id + '-best', G.best);
   $('r-score').textContent = G.score; $('r-best').textContent = G.best;
-  menu('Время вышло', '', 'Ещё раз', true); setState('over'); play('win', .3); sfx.end();
+  const dead = reason === 'hp';
+  menu(dead ? 'Здоровье закончилось' : 'Время вышло', '', 'Ещё раз', true); setState('over');
+  play(dead ? 'idle' : 'win', .3); dead ? sfx.lose() : sfx.end();
 }
 function pause() { if (G.state !== 'play') return; keys.clear(); menu('Пауза', CFG.pauseLead, 'Продолжить'); setState('pause'); }
 
@@ -359,11 +385,36 @@ function collect(p) {
   const m = mult(); G.score += m;
   burst(p.e.getWorldPosition(new THREE.Vector3()), '#7fd2f5', 16, 5);
   p.g.visible = false; p.wait = .7; sfx.pick(G.combo);
-  if (G.picks % 10 === 0) { G.time = Math.min(G.time + 3, 99); toast('+3 секунды', '#7fd2f5'); sfx.bonus(); }
+  if (G.picks % 10 === 0) {
+    G.time = Math.min(G.time + 3, 99);
+    const heal = player.hp < MAX_HP; if (heal) player.hp++;
+    toast(heal ? '+3 секунды · +1 сердце' : '+3 секунды', heal ? '#ff9a92' : '#7fd2f5'); sfx.bonus();
+  }
+}
+function moveInput() { // куда ведёт ввод: [вперёд, вправо]; клавиатура и джойстик складываются
+  return [
+    (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) + touch.y,
+    (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0) + touch.x,
+  ];
+}
+function roll() {
+  const p = player;
+  if (G.state !== 'play' || G.dying > 0 || !p.grounded || p.hit > 0 || p.roll > 0 || p.rollCool > 0 || p.stamina < ROLL_COST) return;
+  fwd.set(Math.sin(G.yaw), 0, Math.cos(G.yaw)); right.set(-Math.cos(G.yaw), 0, Math.sin(G.yaw));
+  const [fz, sx] = moveInput();
+  p.rollDir.set(0, 0, 0).addScaledVector(fwd, fz).addScaledVector(right, sx);
+  if (p.rollDir.lengthSq() < .01) p.rollDir.set(Math.sin(p.facing), 0, Math.cos(p.facing)); // стоим — кувырок по взгляду героя
+  p.rollDir.normalize(); p.facing = Math.atan2(p.rollDir.x, p.rollDir.z);
+  p.roll = ROLL_T; p.rollCool = ROLL_COOL; p.safe = ROLL_T + .12; p.stamina -= ROLL_COST; p.punch = 0;
+  burst(new THREE.Vector3(p.pos.x, .25, p.pos.z), '#9fb8cc', 12, 3); sfx.roll(); buzz(15);
+}
+function jump() {
+  if (G.state === 'play' && player.grounded && player.hit <= 0 && player.roll <= 0) { player.vy = 7.2; player.grounded = false; tone(240, 420, .1, 'triangle', .07); }
 }
 function punch() {
-  if (G.state !== 'play' || player.cool > 0 || player.hit > 0) return;
-  player.punch = .44; player.cool = .55; sfx.punch();
+  if (G.state !== 'play' || player.cool > 0 || player.hit > 0 || player.roll > 0) return;
+  player.attack = Math.random() < .5 ? 'kick' : 'punch'; // каждый раз жребий: удар рукой или ногой
+  player.punch = .44; player.cool = .55; sfx[player.attack]();
   const f = new THREE.Vector3(Math.sin(player.facing), 0, Math.cos(player.facing));
   let got = 0;
   for (const b of bots) {
@@ -374,12 +425,14 @@ function punch() {
       b.active = false; b.g.visible = false; b.wait = 3.5; got++;
     }
   }
-  if (got) { G.score += 2 * got; toast('+' + 2 * got, '#7fd2f5'); sfx.kill(); G.shake = Math.max(G.shake, .12); }
+  if (got) { G.score += 2 * got; toast('+' + 2 * got, '#7fd2f5'); sfx.kill(); buzz(25); G.shake = Math.max(G.shake, .12); }
 }
 function damage(b) {
-  player.hit = .55; player.inv = 1.7; player.punch = 0; G.combo = 0; G.comboT = 0;
-  const lost = Math.min(3, G.score); G.score -= lost; toast(lost ? `−${lost}` : 'Осторожно!', '#ff8a80');
-  sfx.hit(); G.shake = .4; ui.flash.style.opacity = 1;
+  player.hp = Math.max(0, player.hp - 1); const dead = player.hp === 0;
+  player.hit = dead ? .9 : .55; player.inv = dead ? 99 : 1.7; player.punch = 0; G.combo = 0; G.comboT = 0;
+  toast(dead ? 'Здоровье закончилось' : player.hp === 1 ? 'Последнее сердце!' : '−1 сердце', '#ff8a80');
+  if (dead) G.dying = .9; // короткая пауза на анимацию удара, потом экран итогов
+  sfx.hit(); buzz(60); G.shake = .4; ui.flash.style.opacity = 1;
   const away = new THREE.Vector3().subVectors(player.pos, b.pos).setY(0).normalize();
   player.vel.copy(away.multiplyScalar(9));
   burst(new THREE.Vector3(player.pos.x, 1.1, player.pos.z), '#ff6a5c', 18, 6);
@@ -390,25 +443,29 @@ const fwd = new THREE.Vector3(), right = new THREE.Vector3(), wish = new THREE.V
 function updatePlayer(dt) {
   const p = player;
   p.hit = Math.max(0, p.hit - dt); p.punch = Math.max(0, p.punch - dt); p.cool = Math.max(0, p.cool - dt); p.inv = Math.max(0, p.inv - dt);
+  p.roll = Math.max(0, p.roll - dt); p.rollCool = Math.max(0, p.rollCool - dt); p.safe = Math.max(0, p.safe - dt);
+  if (touch.punchHeld) punch(); // кнопку можно держать: удар повторяется по перезарядке
   if (keys.has('ArrowLeft')) G.yaw += 2.4 * dt; if (keys.has('ArrowRight')) G.yaw -= 2.4 * dt;
   fwd.set(Math.sin(G.yaw), 0, Math.cos(G.yaw)); right.set(-Math.cos(G.yaw), 0, Math.sin(G.yaw));
-  const fz = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0), sx = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
+  const [fz, sx] = moveInput();
   wish.set(0, 0, 0).addScaledVector(fwd, fz).addScaledVector(right, sx);
-  const moving = wish.lengthSq() > 0;
-  if (moving) wish.normalize();
-  const wantSprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
-  const sprint = wantSprint && moving && !p.winded && p.stamina > 0;
+  const len = wish.length(), moving = len > .001;
+  let mag = 1; // сила нажатия: у клавиатуры всегда 1, у джойстика от слабого до полного
+  if (moving) { mag = Math.min(1, len); wish.divideScalar(len); }
+  const wantSprint = keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.sprint;
+  const sprint = wantSprint && moving && !p.winded && p.stamina > 0 && p.roll <= 0;
   p.stamina = clamp(p.stamina + (sprint ? -34 : 17) * dt, 0, 100);
   if (p.stamina <= 0) p.winded = true; if (p.stamina > 22) p.winded = false;
-  const control = p.hit > 0 ? 0 : p.punch > 0 ? .45 : 1, speed = (sprint ? SPRINT : RUN) * control;
+  const control = p.hit > 0 ? 0 : p.punch > 0 ? .45 : 1, speed = (sprint ? SPRINT : RUN) * control * (mag < 1 ? .45 + .55 * mag : 1);
   const accel = p.hit > 0 ? 7 : p.grounded ? 16 : 6;
   wish.multiplyScalar(speed);
-  p.vel.x += (wish.x - p.vel.x) * Math.min(1, accel * dt); p.vel.z += (wish.z - p.vel.z) * Math.min(1, accel * dt);
+  if (p.roll > 0) { const k = .4 + .6 * (p.roll / ROLL_T); p.vel.x = p.rollDir.x * ROLL_SPEED * k; p.vel.z = p.rollDir.z * ROLL_SPEED * k; } // рывок с затуханием
+  else { p.vel.x += (wish.x - p.vel.x) * Math.min(1, accel * dt); p.vel.z += (wish.z - p.vel.z) * Math.min(1, accel * dt); }
   p.pos.x += p.vel.x * dt; p.pos.z += p.vel.z * dt;
   pushOut(p.pos, .42);
   if (!p.grounded) { p.vy -= 19 * dt; p.pos.y += p.vy * dt; if (p.pos.y <= 0) { p.pos.y = 0; p.vy = 0; p.grounded = true; } }
   const flat = Math.hypot(p.vel.x, p.vel.z);
-  if (moving && p.hit <= 0) {
+  if (moving && p.hit <= 0 && p.roll <= 0) {
     const target = Math.atan2(wish.x, wish.z); let d = target - p.facing; d = Math.atan2(Math.sin(d), Math.cos(d));
     p.facing += d * Math.min(1, 13 * dt);
   }
@@ -416,12 +473,14 @@ function updatePlayer(dt) {
   character.visible = p.inv <= 0 || p.hit > 0 || Math.floor(p.inv * 12) % 2 === 0;
 
   if (p.hit > 0) play('hit');
-  else if (p.punch > 0) play('punch');
+  else if (p.roll > 0) play('roll', .08);
+  else if (p.punch > 0) play(p.attack);
   else if (!p.grounded) play('jump');
   else if (flat > .6) { play('run', .12); actions.run.setEffectiveTimeScale(flat / RUN * 1.05); }
   else play('idle', .2);
 }
 function updateWorld(dt) {
+  if (G.dying > 0) { G.dying -= dt; if (G.dying <= 0) { finish('hp'); return; } }
   G.elapsed += dt; G.time -= dt;
   if (G.comboT > 0) { G.comboT -= dt; if (G.comboT <= 0) G.combo = 0; }
   const want = Math.min(10, 5 + Math.floor(G.elapsed / 14));
@@ -434,11 +493,11 @@ function updateWorld(dt) {
     b.pos.x += dx / d * sp * dt; b.pos.z += dz / d * sp * dt; b.g.rotation.y = Math.atan2(dx, dz);
     for (const o of bots) if (o !== b && o.active) { const ox = b.pos.x - o.pos.x, oz = b.pos.z - o.pos.z, od = Math.hypot(ox, oz); if (od > .01 && od < 1.8) { b.pos.x += ox / od * dt * 2.2; b.pos.z += oz / od * dt * 2.2; } }
     pushOut(b.pos, .6);
-    if (d < 1.15 && player.pos.y < 1.05 && player.inv <= 0) damage(b);
+    if (d < 1.15 && player.pos.y < 1.05 && player.inv <= 0 && player.safe <= 0) damage(b);
   });
   pickups.forEach(p => {
     if (p.wait > 0) { p.wait -= dt; if (p.wait <= 0) { p.g.position.copy(freeSpot(13)); p.g.visible = true; } return; }
-    if (Math.hypot(p.g.position.x - player.pos.x, p.g.position.z - player.pos.z) < 1.45 && player.pos.y < 1.9) collect(p);
+    if (Math.hypot(p.g.position.x - player.pos.x, p.g.position.z - player.pos.z) < 1.45 && player.pos.y < 1.9 && G.dying <= 0) collect(p);
   });
   if (G.time <= 0) { G.time = 0; finish(); }
 }
@@ -472,7 +531,8 @@ function updateCamera(dt) {
   camera.position.copy(camTo);
   if (G.shake > 0 && !reduced) { G.shake = Math.max(0, G.shake - dt * 1.3); camera.position.x += (Math.random() - .5) * G.shake; camera.position.y += (Math.random() - .5) * G.shake; }
   camera.lookAt(aim);
-  const sprintFov = G.state === 'play' && !reduced && Math.hypot(player.vel.x, player.vel.z) > RUN + .6 ? 69 : 60;
+  const baseFov = camera.aspect >= 1.3 ? 60 : Math.min(100, 2 * Math.atan(Math.tan(37 * Math.PI / 180) / camera.aspect) * 180 / Math.PI);
+  const sprintFov = G.state === 'play' && !reduced && Math.hypot(player.vel.x, player.vel.z) > RUN + .6 ? baseFov + 9 : baseFov;
   if (Math.abs(camera.fov - sprintFov) > .05) { camera.fov += (sprintFov - camera.fov) * Math.min(1, 7 * dt); camera.updateProjectionMatrix(); }
 }
 
@@ -484,7 +544,8 @@ addEventListener('keydown', e => {
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
   keys.add(e.code);
   if (e.repeat) return;
-  if (e.code === 'Space' && player.grounded && player.hit <= 0) { player.vy = 7.2; player.grounded = false; tone(240, 420, .1, 'triangle', .07); }
+  if (e.code === 'Space') jump();
+  if (e.code === 'KeyC') roll();
   if (e.code === 'KeyE' || e.code === 'KeyF') punch();
 });
 addEventListener('keyup', e => keys.delete(e.code));
@@ -504,6 +565,85 @@ let wasLocked = false;
 document.addEventListener('pointerlockchange', () => { const now = !!document.pointerLockElement; if (wasLocked && !now) pause(); wasLocked = now; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 ui.go.addEventListener('click', start);
+
+// ---------- Сенсорное управление ----------
+// Слева — плавающий джойстик, справа — свайп камеры, кнопки удара, прыжка и паузы.
+// Pointer Events: у каждого пальца свой pointerId, поэтому бег и поворот камеры идут одновременно.
+const el = { layer: $('touch'), joy: $('joy'), knob: $('joy').firstElementChild };
+const joyRadius = () => clamp(Math.min(innerWidth, innerHeight) * .15, 42, 66);
+function layoutJoy(cx, cy) { // без касания кольцо стоит в левом нижнем углу как подсказка
+  const r = joyRadius(); el.joy.style.setProperty('--r2', r * 2 + 'px');
+  el.joy.style.left = (cx ?? r + 36) + 'px'; el.joy.style.top = (cy ?? innerHeight - r - 40) + 'px';
+}
+function touchReset() {
+  touch.x = touch.y = 0; touch.sprint = touch.punchHeld = false; touch.moveId = touch.lookId = null;
+  el.joy.classList.remove('on', 'fast'); el.knob.style.transform = ''; layoutJoy();
+  document.querySelectorAll('.tbtn.down').forEach(b => b.classList.remove('down'));
+}
+function syncTouchUi() { el.layer.classList.toggle('on', touchMode && G.state === 'play'); }
+function updateNote() {
+  $('note').textContent = touchMode && innerHeight > innerWidth ? 'Лучше играть, повернув телефон горизонтально.' : '';
+}
+function setTouchMode(on) {
+  if (touchMode === on) return; touchMode = on;
+  document.documentElement.classList.toggle('touch', on);
+  if (!on) touchReset();
+  syncTouchUi(); updateNote();
+}
+function joyMove(cx, cy) {
+  const r = joyRadius(), dx = cx - touch.ox, dy = cy - touch.oy, d = Math.hypot(dx, dy), k = d > r ? r / d : 1;
+  el.knob.style.transform = `translate(${dx * k}px,${dy * k}px)`;
+  const m = Math.min(1, d / r), dead = .14, a = m <= dead ? 0 : (m - dead) / (1 - dead);
+  touch.x = d ? dx / d * a : 0; touch.y = d ? -dy / d * a : 0;
+  touch.sprint = d > r * (touch.sprint ? 1.2 : 1.45); // потянули дальше кольца — спринт; гистерезис, чтобы не мигал
+  el.joy.classList.toggle('fast', touch.sprint);
+}
+el.layer.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse' || G.state !== 'play') return;
+  e.preventDefault();
+  if (e.clientX < innerWidth * .5 && touch.moveId === null) {
+    const r = joyRadius();
+    touch.moveId = e.pointerId; touch.ox = clamp(e.clientX, r + 12, innerWidth * .5 - 8); touch.oy = clamp(e.clientY, r + 70, innerHeight - r - 12);
+    layoutJoy(touch.ox, touch.oy); el.joy.classList.add('on'); joyMove(e.clientX, e.clientY);
+  } else if (touch.lookId === null) {
+    touch.lookId = e.pointerId; touch.lx = e.clientX; touch.ly = e.clientY;
+  } else return;
+  el.layer.setPointerCapture(e.pointerId);
+});
+el.layer.addEventListener('pointermove', e => {
+  if (e.pointerId === touch.moveId) joyMove(e.clientX, e.clientY);
+  else if (e.pointerId === touch.lookId) {
+    G.yaw -= (e.clientX - touch.lx) * .0062; G.pitch = clamp(G.pitch + (e.clientY - touch.ly) * .0045, -.12, 1.15);
+    touch.lx = e.clientX; touch.ly = e.clientY;
+  }
+});
+const touchEnd = e => {
+  if (e.pointerId === touch.moveId) { touch.moveId = null; touch.x = touch.y = 0; touch.sprint = false; el.joy.classList.remove('on', 'fast'); el.knob.style.transform = ''; layoutJoy(); }
+  if (e.pointerId === touch.lookId) touch.lookId = null;
+};
+el.layer.addEventListener('pointerup', touchEnd); el.layer.addEventListener('pointercancel', touchEnd);
+el.layer.addEventListener('contextmenu', e => e.preventDefault());
+function bindButton(id, down, up) {
+  const b = $(id);
+  b.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); b.classList.add('down'); b.setPointerCapture(e.pointerId); down(); });
+  const release = () => { b.classList.remove('down'); up && up(); };
+  b.addEventListener('pointerup', release); b.addEventListener('pointercancel', release);
+}
+bindButton('t-punch', () => { touch.punchHeld = true; punch(); }, () => { touch.punchHeld = false; });
+bindButton('t-jump', jump);
+bindButton('t-roll', roll);
+bindButton('t-pause', pause);
+// Режим определяем по устройству ввода: касание включает сенсорный интерфейс, мышь выключает.
+addEventListener('pointerdown', e => { if (e.pointerType === 'mouse') setTouchMode(false); else setTouchMode(true); }, true);
+addEventListener('resize', () => { updateNote(); layoutJoy(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+// Запрет масштабирования страницы. Метатег viewport и touch-action держат Chrome и Android,
+// а iOS Safari их игнорирует (с iOS 10), поэтому его жесты отменяем явно.
+for (const n of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(n, e => e.preventDefault(), { passive: false });
+document.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false }); // щипок
+let lastTapEnd = 0; // двойной тап масштабирует страницу; кнопку «Играть» не трогаем, чтобы не терять её клик
+document.addEventListener('touchend', e => { const now = Date.now(); if (now - lastTapEnd < 350 && !e.target.closest('#go')) e.preventDefault(); lastTapEnd = now; }, { passive: false });
+setTouchMode(coarse); layoutJoy();
 
 // ---------- Цикл ----------
 const clock = new THREE.Clock(); let t = 0, fpsSum = 0, fpsN = 0;
@@ -527,13 +667,12 @@ function frame() {
 }
 
 $('brand').textContent = CFG.brand; $('pickup-label').textContent = CFG.pickupLabel;
-window.__g = { // нужен tools/test.mjs
-  G, player, pickups, bots, keys, punch, finish };
+window.__g = { maxHp: MAX_HP, G, player, pickups, bots, keys, touch, punch, jump, roll, finish, get anim() { return cur; }, get touchMode() { return touchMode; } };
 loadAll().then(() => {
   player.facing = Math.PI; resetRound();
   pickups.forEach(p => { p.g.visible = true; });
   menu(CFG.title, CFG.lead, 'Играть');
-  if (matchMedia('(pointer: coarse)').matches && !matchMedia('(pointer: fine)').matches) $('note').textContent = 'Игра рассчитана на клавиатуру и мышь.';
+  updateNote();
   setState('menu'); document.title = CFG.title;
 }).catch(e => { console.error(e); fatal('Не удалось загрузить персонажа: ' + e.message); });
 frame();

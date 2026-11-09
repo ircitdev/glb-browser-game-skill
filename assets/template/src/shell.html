@@ -2,7 +2,8 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#030a14">
 <title>Загрузка</title>
 <style>
   :root { --bg:#030a14; --accent:#33a4d4; --ink:#eaf4fb; --muted:#8fb0c6; --bad:#ff5a4f; }
@@ -21,6 +22,17 @@
   #s-time.low b { color:var(--bad); }
   #s-combo { right:28px; text-align:right; opacity:0; transition:opacity .15s; }
   #s-combo b { color:var(--accent); }
+  #hearts { display:flex; gap:3px; margin-top:7px; }
+  #hearts .h { display:block; width:20px; height:20px; }
+  #hearts svg { display:block; width:100%; height:100%; fill:#ff5a4f; filter:drop-shadow(0 1px 4px rgb(0 0 0 / .65)); transition:fill .2s; }
+  #hearts .h.off svg { fill:rgb(255 255 255 / .17); filter:none; }
+  #hearts .h.lose { animation:hlose .5s ease-out; }
+  #hearts .h.gain { animation:hgain .6s ease-out; }
+  #hearts.low .h:not(.off) { animation:hbeat 1s ease-in-out infinite; }
+  @keyframes hlose { 0% { transform:scale(1.6) rotate(-14deg); } 40% { transform:scale(.65); } 100% { transform:scale(1); } }
+  @keyframes hgain { 0% { transform:scale(.4); } 60% { transform:scale(1.4); } 100% { transform:scale(1); } }
+  @keyframes hbeat { 0%,100% { transform:scale(1); } 50% { transform:scale(1.2); } }
+  @media (prefers-reduced-motion:reduce) { #hearts .h, #hearts.low .h:not(.off) { animation:none !important; } }
   #stam { position:absolute; left:50%; bottom:30px; width:220px; height:6px; margin-left:-110px;
     background:rgba(255,255,255,.14); border-radius:3px; overflow:hidden; }
   #stam i { display:block; height:100%; width:100%; background:var(--accent); }
@@ -31,10 +43,15 @@
   @keyframes t { 0%{opacity:0;transform:translate(-50%,14px)} 15%{opacity:1;transform:translate(-50%,0)} 70%{opacity:1} 100%{opacity:0;transform:translate(-50%,-16px)} }
   #flash { position:fixed; inset:0; pointer-events:none; opacity:0;
     background:radial-gradient(ellipse at center,rgba(255,60,50,0) 45%,rgba(255,60,50,.55) 100%); }
-  #overlay { position:fixed; inset:0; display:flex; align-items:center; padding:0 7vw;
+  /* без этого свайп вниз обновляет страницу, а долгое нажатие выделяет текст */
+  /* none отключает щипок и двойной тап (масштаб); меню при этом можно листать пальцем — см. #overlay */
+  html,body { overscroll-behavior:none; touch-action:none; -webkit-text-size-adjust:100%; text-size-adjust:100%;
+    -webkit-tap-highlight-color:transparent; -webkit-touch-callout:none; }
+  #overlay { position:fixed; inset:0; z-index:5; display:flex; padding:0 7vw; overflow-y:auto; touch-action:pan-y;
     background:linear-gradient(90deg,rgba(3,10,20,.94) 0%,rgba(3,10,20,.72) 42%,rgba(3,10,20,0) 72%); }
   #overlay.hide { display:none; }
-  .panel { max-width:470px; }
+  /* auto-отступы центрируют панель, а на низком экране дают прокрутку вместо обрезки сверху */
+  .panel { max-width:470px; margin:auto 0; padding:16px 0; }
   .brand { font-size:13px; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); font-weight:600; }
   h1 { font-size:clamp(44px,6.4vw,76px); line-height:1; margin:.22em 0 .3em; font-weight:800; letter-spacing:-.02em; }
   #lead { font-size:18px; color:#cfe2ef; margin:0 0 24px; }
@@ -49,18 +66,66 @@
   dt { color:var(--ink); font-weight:600; } dd { margin:0; }
   #note { margin:14px 0 0; font-size:13px; color:var(--muted); }
   @media (max-width:640px) { #overlay { background:rgba(3,10,20,.86); } .stat b { font-size:32px; } }
+
+  /* ---- сенсорное управление: слой виден только на телефоне и только во время раунда ---- */
+  .keys-touch { display:none; } html.touch .keys-touch { display:grid; } html.touch .keys-desk { display:none; }
+  #touch { position:fixed; inset:0; z-index:2; display:none; touch-action:none; user-select:none; -webkit-user-select:none; }
+  #touch.on { display:block; }
+  #joy { position:absolute; width:var(--r2,112px); height:var(--r2,112px); margin:calc(var(--r2,112px) / -2) 0 0 calc(var(--r2,112px) / -2);
+    border-radius:50%; border:2px solid rgb(255 255 255 / .3); background:rgb(51 164 212 / .1); opacity:.35; pointer-events:none;
+    transition:opacity .15s, border-color .15s, background .15s; }
+  #joy.on { opacity:.95; }
+  #joy.fast { border-color:var(--accent); background:rgb(51 164 212 / .24); }
+  #joy i { position:absolute; left:50%; top:50%; width:44%; height:44%; margin:-22% 0 0 -22%; border-radius:50%;
+    background:rgb(234 244 251 / .88); box-shadow:0 2px 10px rgb(0 0 0 / .45); }
+  .tbtn { position:absolute; display:flex; align-items:center; justify-content:center; border-radius:50%; touch-action:none;
+    color:var(--ink); font-weight:700; font-size:13px; letter-spacing:.04em; text-transform:uppercase;
+    background:rgb(3 10 20 / .55); border:2px solid rgb(255 255 255 / .38); backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
+    transition:transform .06s, background .06s, border-color .06s; }
+  .tbtn.down { background:rgb(51 164 212 / .6); border-color:var(--accent); transform:scale(.92); }
+  #t-punch { right:calc(24px + env(safe-area-inset-right)); bottom:calc(28px + env(safe-area-inset-bottom)); width:88px; height:88px; font-size:14px; }
+  #t-jump  { right:calc(124px + env(safe-area-inset-right)); bottom:calc(30px + env(safe-area-inset-bottom)); width:76px; height:76px; font-size:11.5px; letter-spacing:.02em; }
+  #t-roll  { right:calc(34px + env(safe-area-inset-right)); bottom:calc(128px + env(safe-area-inset-bottom)); width:72px; height:72px; font-size:11px; letter-spacing:.02em; }
+  .tbtn.wait { opacity:.42; }
+  #t-pause { right:calc(14px + env(safe-area-inset-right)); top:calc(12px + env(safe-area-inset-top)); width:44px; height:44px; gap:5px; }
+  #t-pause::before, #t-pause::after { content:""; width:4px; height:16px; border-radius:2px; background:var(--ink); }
+  html.touch .stat { top:calc(14px + env(safe-area-inset-top)); }
+  html.touch #s-score { left:calc(24px + env(safe-area-inset-left)); }
+  html.touch #s-combo { right:calc(76px + env(safe-area-inset-right)); }
+  html.touch #stam { bottom:calc(16px + env(safe-area-inset-bottom)); }
+  /* низкий ландшафтный экран телефона: компактнее заголовок, подсказки и счётчики */
+  @media (max-height:480px) {
+    #overlay { padding:0 5vw 0 calc(5vw + env(safe-area-inset-left)); }
+    .panel { max-width:min(470px,58vw); padding:8px 0; }
+    h1 { font-size:clamp(32px,11vh,50px); margin:.1em 0 .2em; }
+    #lead { font-size:15px; margin:0 0 12px; }
+    button#go { padding:10px 26px; font-size:16px; }
+    dl { margin-top:12px; font-size:13px; gap:3px 12px; }
+    #note { margin-top:8px; }
+    .stat small { font-size:10px; } .stat b { font-size:30px; }
+    #hearts { gap:2px; margin-top:4px; } #hearts .h { width:16px; height:16px; }
+    #hud::before { height:84px; }
+    #toast { top:22%; font-size:24px; }
+  }
 </style>
 </head>
 <body>
 <canvas id="view"></canvas>
 <div id="hud">
-  <div class="stat" id="s-score"><small id="pickup-label"></small><b id="score">0</b></div>
+  <div class="stat" id="s-score"><small id="pickup-label"></small><b id="score">0</b><div id="hearts" role="img" aria-label="Здоровье"></div></div>
   <div class="stat" id="s-time"><small>Время</small><b id="time">1:15</b></div>
   <div class="stat" id="s-combo"><small>Серия</small><b id="combo">×2</b></div>
   <div id="stam"><i></i></div>
   <div id="toast"></div>
 </div>
 <div id="flash"></div>
+<div id="touch" aria-hidden="true">
+  <div id="joy"><i></i></div>
+  <div class="tbtn" id="t-pause" role="button" aria-label="Пауза"></div>
+  <div class="tbtn" id="t-jump" role="button" aria-label="Прыжок">Прыжок</div>
+  <div class="tbtn" id="t-roll" role="button" aria-label="Кувырок">Кувырок</div>
+  <div class="tbtn" id="t-punch" role="button" aria-label="Удар">Удар</div>
+</div>
 <div id="overlay">
   <div class="panel">
     <div class="brand" id="brand"></div>
@@ -68,12 +133,18 @@
     <p id="lead"></p>
     <p id="result"><b id="r-score">0</b> · лучший результат <span id="r-best">0</span></p>
     <button id="go" disabled>Загрузка…</button>
-    <dl>
+    <dl class="keys-touch">
+      <dt>Левый палец</dt><dd>бег, дальше кольца — спринт</dd>
+      <dt>Правый палец</dt><dd>камера</dd>
+      <dt>Кнопки справа</dt><dd>удар (враг даёт +2), прыжок и кувырок</dd>
+    </dl>
+    <dl class="keys-desk">
       <dt>W A S D</dt><dd>бег</dd>
       <dt>Мышь</dt><dd>камера</dd>
       <dt>Shift</dt><dd>ускорение</dd>
       <dt>Пробел</dt><dd>прыжок через врага</dd>
       <dt>ЛКМ или E</dt><dd>удар, враг даёт +2</dd>
+      <dt>C</dt><dd>кувырок: уворот от врага</dd>
       <dt>M</dt><dd>звук</dd>
     </dl>
     <p id="note"></p>
